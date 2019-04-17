@@ -179,14 +179,18 @@ void softmax_tree(float *input, int batch, int inputs, float temp, tree *hierarc
 void forward_region_layer(const region_layer l, network_state state)
 {
     int i,j,b,t,n;
+
+	// size : 每个 bounding box 的 信息数据个数
     int size = l.coords + l.classes + 1;
     memcpy(l.output, state.input, l.outputs*l.batch*sizeof(float));
     #ifndef GPU
+	// 维度调整
     flatten(l.output, l.w*l.h, size*l.n, l.batch, 1);
     #endif
     for (b = 0; b < l.batch; ++b){
         for(i = 0; i < l.h*l.w*l.n; ++i){
             int index = size*i + b*l.outputs;
+			// 置信度 激活
             l.output[index + 4] = logistic_activate(l.output[index + 4]);
         }
     }
@@ -203,7 +207,9 @@ void forward_region_layer(const region_layer l, network_state state)
     } else if (l.softmax){
         for (b = 0; b < l.batch; ++b){
             for(i = 0; i < l.h*l.w*l.n; ++i){
+				// i 是 对 bounding box 进行遍历
                 int index = size*i + b*l.outputs;
+				// 对概率 进行  soft max
                 softmax(l.output + index + 5, l.classes, 1, l.output + index + 5, 1);
             }
         }
@@ -250,11 +256,16 @@ void forward_region_layer(const region_layer l, network_state state)
         for (j = 0; j < l.h; ++j) {
             for (i = 0; i < l.w; ++i) {
                 for (n = 0; n < l.n; ++n) {
+					// 四重循环， 遍历 每一个 bounding box 的处理
                     int index = size*(j*l.w*l.n + i*l.n + n) + b*l.outputs;
+					// 当前网络 预测到的 box
                     box pred = get_region_box(l.output, l.biases, n, index, i, j, l.w, l.h);
                     float best_iou = 0;
                     int best_class_id = -1;
+
+					// 遍历所有真值框， 找出 IOU 最大的
                     for(t = 0; t < l.max_boxes; ++t){
+						// 标记数据中的 真值 box
                         box truth = float_to_box(state.truth + t*5 + b*l.truths);
                         int class_id = state.truth[t * 5 + b*l.truths + 4];
                         if (class_id >= l.classes) continue; // if label contains class_id more than number of classes in the cfg-file
@@ -265,6 +276,10 @@ void forward_region_layer(const region_layer l, network_state state)
                             best_iou = iou;
                         }
                     }
+					// 这个是置信度
+					// 这个地方使用了 noobject_scale， 按照损失函数的定义， 应该是计算没有目标时 的置信度损失
+					// 明白了： 这里是假设 没有 目标
+					// 如果有目标，best_iou > l.thresh, 那么 接下来代码中的 else 会 将其置为0
                     avg_anyobj += l.output[index + 4];
                     l.delta[index + 4] = l.noobject_scale * ((0 - l.output[index + 4]) * logistic_gradient(l.output[index + 4]));
                     if(l.classfix == -1) l.delta[index + 4] = l.noobject_scale * ((best_iou - l.output[index + 4]) * logistic_gradient(l.output[index + 4]));
@@ -278,6 +293,8 @@ void forward_region_layer(const region_layer l, network_state state)
                         }
                     }
 
+					// 这个地方是啥意思？ 为啥 直接用 i 和 j 来构造真值？
+					// 这些真值 并不是真实存在的啊
                     if(*(state.net.seen) < 12800){
                         box truth = {0};
                         truth.x = (i + .5)/l.w;
@@ -293,6 +310,10 @@ void forward_region_layer(const region_layer l, network_state state)
                 }
             }
         }
+
+		// 遍历每个真值框， 找到 对应位置的 cell， 遍历cell中 多个 bounding box
+		// 找到 IOU 最高的 预测box， delta_region_box 计算坐标损失
+		// delta_region_class 计算 分类损失
         for(t = 0; t < l.max_boxes; ++t){
             box truth = float_to_box(state.truth + t*5 + b*l.truths);
             int class_id = state.truth[t * 5 + b*l.truths + 4];
@@ -340,6 +361,7 @@ void forward_region_layer(const region_layer l, network_state state)
             if(iou > .5) recall += 1;
             avg_iou += iou;
 
+			// TODO: 这个地方 ， 如果 真值 没有 包含 目标， 关于置信度的 loss 是不是 应该重新计算?
             //l.delta[best_index + 4] = iou - l.output[best_index + 4];
             avg_obj += l.output[best_index + 4];
             l.delta[best_index + 4] = l.object_scale * (1 - l.output[best_index + 4]) * logistic_gradient(l.output[best_index + 4]);
